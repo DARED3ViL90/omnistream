@@ -12,7 +12,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 import httpx
 
-app = FastAPI(title="OmniStream Addon", version="2.2.0")
+from domain_watcher import refresh_verified_domains, get_domain
+
+app = FastAPI(title="OmniStream Addon", version="2.3.0")
 
 # 1. Enable Wildcard CORS for Stremio Web and Native Apps
 app.add_middleware(
@@ -26,7 +28,7 @@ app.add_middleware(
 # 2. Addon Manifest
 MANIFEST = {
     "id": "community.omnistream.core",
-    "version": "2.2.0",
+    "version": "2.3.0",
     "name": "OmniStream 🌍 (Multi-Audio)",
     "description": "Universal High-Speed Multi-Audio Streaming Provider with Smart Audio Prioritization & 4K UHD Support.",
     "logo": "https://omnistream-jpp5.onrender.com/logo.png",
@@ -58,6 +60,18 @@ def get_logo():
     elif os.path.exists(r"C:\Users\AVITA\omnistream_global_logo.png"):
         return FileResponse(r"C:\Users\AVITA\omnistream_global_logo.png", media_type="image/png")
     return JSONResponse(status_code=404, content={"error": "Logo not found"})
+
+
+@app.get("/domains")
+async def get_domains():
+    """Live verified active domains from FMHY registry."""
+    domains = await refresh_verified_domains()
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "*",
+        "Access-Control-Allow-Headers": "*",
+    }
+    return JSONResponse(content={"status": "online", "verified_domains": domains}, headers=headers)
 
 
 # 3. Smart Language Classifier & Flag Tagger
