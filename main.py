@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 import httpx
 
-app = FastAPI(title="OmniStream Addon", version="2.1.0")
+app = FastAPI(title="OmniStream Addon", version="2.2.0")
 
 # 1. Enable Wildcard CORS for Stremio Web and Native Apps
 app.add_middleware(
@@ -26,7 +26,7 @@ app.add_middleware(
 # 2. Addon Manifest
 MANIFEST = {
     "id": "community.omnistream.core",
-    "version": "2.1.0",
+    "version": "2.2.0",
     "name": "OmniStream 🌍 (Multi-Audio)",
     "description": "Universal High-Speed Multi-Audio Streaming Provider with Smart Audio Prioritization & 4K UHD Support.",
     "logo": "https://omnistream-jpp5.onrender.com/logo.png",
@@ -65,12 +65,16 @@ def classify_audio_and_priority(title: str, seeders: int) -> tuple[str, int]:
     t = title.lower()
 
     # Priority 1: Hindi / Bollywood / Desi Dubs
-    hindi_keywords = ["hindi", "hin", "bollywood"]
+    hindi_keywords = [
+        "hindi", "hin", "bollywood", "dd5.1", "dd 5.1", "org dd",
+        "worldfree4u", "vegamovies", "katmoviehd", "moviesmod", "hdhub",
+        "tombdoc", "remuxdoc", "filmyzilla", "desiremovies", "bolly4u"
+    ]
     if any(k in t for k in hindi_keywords):
         return "🇮🇳 [Hindi Dubbed / Multi Audio]", 100000 + seeders
 
     # Priority 2: Multi-Audio / Dual Audio
-    multi_keywords = ["multi audio", "multi-audio", "dual audio", "dual-audio", "multi"]
+    multi_keywords = ["multi audio", "multi-audio", "dual audio", "dual-audio", "multi", "dual", "dubbed"]
     if any(k in t for k in multi_keywords):
         return "🌐 [Multi-Audio Pack]", 80000 + seeders
 
@@ -151,38 +155,53 @@ async def get_streams(type: str, imdb_id: str):
         except Exception as e:
             print(f"[-] Cinemeta error: {e}")
 
-    # Build targeted search queries
+    # Build targeted search queries with single-space normalization
     search_queries = []
     if title_name:
-        clean_title = re.sub(r"[^\w\s]", " ", title_name).strip()
+        # Normalize to single clean spaces (fixes double space bug)
+        clean_title = " ".join(re.sub(r"[^\w\s]", " ", title_name).split())
+
         if type == "series" and season is not None:
             if episode is not None:
                 search_queries.append(f"{clean_title} S{season:02d}E{episode:02d}")
             search_queries.append(f"{clean_title} S{season:02d}")
             search_queries.append(f"{clean_title} Hindi")
+            search_queries.append(clean_title)
         else:
+            # Movie queries
+            search_queries.append(clean_title)
             search_queries.append(f"{clean_title} Hindi")
             search_queries.append(f"{clean_title} Dual Audio")
-            search_queries.append(f"{clean_title}")
+            
+            # If title has a subtitle (e.g. 'Spider-Man: Brand New Day')
+            if ":" in title_name:
+                sub_parts = title_name.split(":")
+                main_part = " ".join(re.sub(r"[^\w\s]", " ", sub_parts[0]).split())
+                sub_part = " ".join(re.sub(r"[^\w\s]", " ", sub_parts[1]).split())
+                search_queries.append(f"{main_part} {sub_part}")
+                search_queries.append(sub_part)
     else:
         search_queries.append(base_imdb)
 
     # Step 2: Fetch Torrents from Cloudflare-Free Network
     raw_torrents = {}
     async with httpx.AsyncClient(timeout=10.0) as client:
-        for q in search_queries[:3]:
+        for q in search_queries[:4]:
             try:
                 encoded = urllib.parse.quote(q)
                 url = f"https://torrents-csv.com/service/search?q={encoded}"
                 resp = await client.get(url, headers={"User-Agent": USER_AGENT})
                 if resp.status_code == 200:
-                    data = resp.json()
-                    items = data.get("torrents", [])
-                    print(f"    -> Query '{q}' returned {len(items)} torrents.")
-                    for item in items:
-                        ih = item.get("infohash", "").strip().lower()
-                        if ih and ih not in raw_torrents:
-                            raw_torrents[ih] = item
+                    try:
+                        data = resp.json()
+                        items = data.get("torrents", [])
+                        print(f"    -> Query '{q}' returned {len(items)} torrents.")
+                        for item in items:
+                            ih = item.get("infohash", "").strip().lower()
+                            if ih and ih not in raw_torrents:
+                                raw_torrents[ih] = item
+                    except Exception:
+                        pass
             except Exception as e:
                 print(f"[-] Search query error for '{q}': {e}")
 
