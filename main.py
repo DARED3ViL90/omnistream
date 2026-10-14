@@ -205,7 +205,7 @@ async def get_streams(type: str, imdb_id: str):
     # Limit to top 30 best ranked streams
     streams = streams[:30]
 
-    print(f"[✓] Returning {len(streams)} Optimized Ranked Streams (Hindi on Top)!")
+    print(f"[+] Returning {len(streams)} Optimized Ranked Streams (Hindi on Top)!")
     headers = {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "*",
