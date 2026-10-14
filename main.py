@@ -28,7 +28,7 @@ MANIFEST = {
     "id": "community.omnistream.core",
     "version": "2.0.0",
     "name": "OmniStream 🌍 (Multi-Audio)",
-    "description": "Worldwide Torrent Provider with Smart Language Prioritization (🇮🇳 Hindi & 🌐 Multi-Audio on top, followed by 4K/UHD Original Audio).",
+    "description": "Universal High-Speed Multi-Audio Streaming Provider with Smart Audio Prioritization & 4K UHD Support.",
     "logo": "https://omnistream-jpp5.onrender.com/logo.png",
     "background": "https://images.metahub.space/background/medium/tt22084616/img",
     "resources": ["stream"],
