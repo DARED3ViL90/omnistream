@@ -12,6 +12,7 @@ Priority Order:
 import os
 import re
 import urllib.parse
+import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
@@ -156,7 +157,12 @@ def detect_quality(title: str) -> str:
 
 def clean_display_title(raw_title: str) -> str:
     """Removes ugly domain prefixes like 'www.1tamilmv.land - ' from stream titles."""
-    cleaned = re.sub(r"^(?:https?://)?(?:www\.)?[a-zA-Z0-9\.\-]+\.(?:land|pm|ws|org|net|com|one|me|top|baby|xyz)\s*[-_–]\s*", "", raw_title, flags=re.IGNORECASE)
+    cleaned = re.sub(
+        r"^(?:https?://)?(?:www\.)?[a-zA-Z0-9\.\-]+\.(?:land|pm|ws|org|net|com|one|me|top|baby|xyz|solar|lat|click|lease|vip|in|cc|to)\s*[-_–:\s]\s*",
+        "",
+        raw_title,
+        flags=re.IGNORECASE,
+    )
     return cleaned.strip()
 
 
@@ -186,7 +192,7 @@ async def get_streams(type: str, imdb_id: str):
         except Exception as e:
             print(f"[-] Cinemeta error: {e}")
 
-    # Build targeted search queries
+    # Build targeted search queries (Including Year, Hindi, IMAX, Remux & 4K)
     search_queries = []
     if title_name:
         clean_title = " ".join(re.sub(r"[^\w\s]", " ", title_name).split())
@@ -198,14 +204,21 @@ async def get_streams(type: str, imdb_id: str):
             search_queries.append(f"{clean_title} Hindi")
             search_queries.append(clean_title)
         else:
-            # Movie queries: Hindi, IMAX, Remux, 2160p, and Standard
+            # Movie queries: Targeted with Year, Hindi, IMAX, Remux, 2160p
+            if year:
+                search_queries.append(f"{clean_title} {year} Hindi")
+                search_queries.append(f"{clean_title} {year} Remux")
+                search_queries.append(f"{clean_title} {year} IMAX")
+                search_queries.append(f"{clean_title} {year} 2160p")
+                search_queries.append(f"{clean_title} {year}")
+
             search_queries.append(f"{clean_title} Hindi")
-            search_queries.append(clean_title)
-            search_queries.append(f"{clean_title} 2160p")
             search_queries.append(f"{clean_title} Remux")
             search_queries.append(f"{clean_title} IMAX")
+            search_queries.append(f"{clean_title} 2160p")
             search_queries.append(f"{clean_title} Dual Audio")
-            
+            search_queries.append(clean_title)
+
             # Subtitle handling (e.g. 'Spider-Man: Brand New Day')
             if ":" in title_name:
                 sub_parts = title_name.split(":")
@@ -214,27 +227,32 @@ async def get_streams(type: str, imdb_id: str):
     else:
         search_queries.append(base_imdb)
 
-    # Step 2: Fetch Torrents from Cloudflare-Free Network
+    # Step 2: Fetch Torrents in Parallel via Asyncio Gather
     raw_torrents = {}
     async with httpx.AsyncClient(timeout=10.0) as client:
-        for q in search_queries[:6]:
-            try:
-                encoded = urllib.parse.quote(q)
-                url = f"https://torrents-csv.com/service/search?q={encoded}"
-                resp = await client.get(url, headers={"User-Agent": USER_AGENT})
-                if resp.status_code == 200:
-                    try:
-                        data = resp.json()
-                        items = data.get("torrents", [])
-                        print(f"    -> Query '{q}' returned {len(items)} torrents.")
-                        for item in items:
-                            ih = item.get("infohash", "").strip().lower()
-                            if ih and ih not in raw_torrents:
-                                raw_torrents[ih] = item
-                    except Exception:
-                        pass
-            except Exception as e:
-                print(f"[-] Search query error for '{q}': {e}")
+        # Deduplicate queries while preserving order
+        unique_queries = list(dict.fromkeys(search_queries))[:8]
+        tasks = [
+            client.get(
+                f"https://torrents-csv.com/service/search?q={urllib.parse.quote(q)}",
+                headers={"User-Agent": USER_AGENT}
+            )
+            for q in unique_queries
+        ]
+        responses = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for q, resp in zip(unique_queries, responses):
+            if isinstance(resp, httpx.Response) and resp.status_code == 200:
+                try:
+                    data = resp.json()
+                    items = data.get("torrents", [])
+                    print(f"    -> Parallel Query '{q}' returned {len(items)} torrents.")
+                    for item in items:
+                        ih = item.get("infohash", "").strip().lower()
+                        if ih and ih not in raw_torrents:
+                            raw_torrents[ih] = item
+                except Exception:
+                    pass
 
     print(f"[+] Total unique torrents collected: {len(raw_torrents)}")
 
