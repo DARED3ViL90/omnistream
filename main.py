@@ -60,6 +60,23 @@ def get_logo():
     return JSONResponse(status_code=404, content={"error": "Logo not found"})
 
 
+@app.get("/debug/{type}/{imdb_id}")
+async def debug_endpoint(type: str, imdb_id: str):
+    results = {}
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            r1 = await client.get(f"https://torrentio.strem.fun/stream/{type}/{imdb_id}.json", headers={"User-Agent": USER_AGENT})
+            results["torrentio"] = {"status": r1.status_code, "body_preview": r1.text[:300]}
+        except Exception as e:
+            results["torrentio"] = {"error": str(e)}
+        try:
+            r2 = await client.get(f"https://v3-cinemeta.strem.io/meta/{type}/{imdb_id}.json", headers={"User-Agent": USER_AGENT})
+            results["cinemeta"] = {"status": r2.status_code, "name": r2.json().get("meta", {}).get("name")}
+        except Exception as e:
+            results["cinemeta"] = {"error": str(e)}
+    return results
+
+
 # 3. Smart Language Classifier & Flag Tagger
 def classify_audio_and_priority(title: str) -> tuple[str, int]:
     t = title.lower()
