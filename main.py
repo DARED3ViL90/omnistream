@@ -86,14 +86,27 @@ def classify_audio_and_priority(title: str, seeders: int) -> tuple[str, int]:
     # Special Detection: TamilMV Release
     is_tamilmv = "tamilmv" in t or "1tamilmv" in t
 
-    # Priority 1: Hindi / Bollywood / TamilMV Hindi Dubs
-    hindi_keywords = [
+    # Priority 1: Indian Regional Audio (Hindi / Tamil / Telugu / Malayalam / Kannada)
+    indian_keywords = [
         "hindi", "hin", "bollywood", "dd5.1", "dd 5.1", "org dd",
-        "worldfree4u", "vegamovies", "katmoviehd", "moviesmod", "hdhub",
-        "tombdoc", "remuxdoc", "filmyzilla", "desiremovies", "bolly4u"
+        "tamil", "telugu", "malayalam", "kannada",
+        "movierulz", "tamilblasters", "worldfree4u", "vegamovies", "katmoviehd",
+        "moviesmod", "hdhub", "tombdoc", "remuxdoc", "filmyzilla", "desiremovies", "bolly4u"
     ]
-    if any(k in t for k in hindi_keywords) or (is_tamilmv and any(x in t for x in ["hin", "hindi", "multi"])):
-        badge = "🇮🇳 [TamilMV / Hindi Dubbed]" if is_tamilmv else "🇮🇳 [Hindi Dubbed / Multi Audio]"
+    is_indian = any(k in t for k in indian_keywords) or is_tamilmv or bool(re.search(r"\b(tam|tel|hin)\b", t))
+    if is_indian:
+        if is_tamilmv:
+            badge = "🇮🇳 [TamilMV / Multi Audio]"
+        elif bool(re.search(r"\b(tamil|tam)\b", t)):
+            badge = "🇮🇳 [Tamil Audio / Multi]"
+        elif bool(re.search(r"\b(telugu|tel)\b", t)):
+            badge = "🇮🇳 [Telugu Audio / Multi]"
+        elif "malayalam" in t:
+            badge = "🇮🇳 [Malayalam Audio / Multi]"
+        elif "kannada" in t:
+            badge = "🇮🇳 [Kannada Audio / Multi]"
+        else:
+            badge = "🇮🇳 [Hindi Dubbed / Multi Audio]"
         return badge, 200000 + seeders
 
     # Priority 2: Multi-Audio / Dual Audio Packs
@@ -158,7 +171,7 @@ def detect_quality(title: str) -> str:
 def clean_display_title(raw_title: str) -> str:
     """Removes ugly domain prefixes like 'www.1tamilmv.land - ' from stream titles."""
     cleaned = re.sub(
-        r"^(?:https?://)?(?:www\.)?[a-zA-Z0-9\.\-]+\.(?:land|pm|ws|org|net|com|one|me|top|baby|xyz|solar|lat|click|lease|vip|in|cc|to)\s*[-_–:\s]\s*",
+        r"^(?:https?://)?(?:www\.)?[a-zA-Z0-9\.\-]+\.(?:land|pm|ws|org|net|com|one|me|top|baby|xyz|solar|lat|click|lease|vip|in|cc|to|pet|dad)\s*[-_–:\s]\s*",
         "",
         raw_title,
         flags=re.IGNORECASE,
@@ -177,10 +190,10 @@ async def get_streams(type: str, imdb_id: str):
     season = int(parts[1]) if len(parts) >= 2 else None
     episode = int(parts[2]) if len(parts) >= 3 else None
 
-    # Step 1: Resolve Title from Cinemeta
+    # Step 1: Resolve Title from Cinemeta with Redirect Support
     title_name = ""
     year = ""
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
         try:
             cinemeta_url = f"https://v3-cinemeta.strem.io/meta/{type}/{base_imdb}.json"
             meta_res = await client.get(cinemeta_url, headers={"User-Agent": USER_AGENT})
@@ -192,19 +205,37 @@ async def get_streams(type: str, imdb_id: str):
         except Exception as e:
             print(f"[-] Cinemeta error: {e}")
 
-    # Build targeted search queries (Including Year, Hindi, IMAX, Remux & 4K)
+    # Build targeted search queries (Including Subtitles, Regional Audio, IMAX, Remux & 4K)
     search_queries = []
     if title_name:
         clean_title = " ".join(re.sub(r"[^\w\s]", " ", title_name).split())
 
+        # If title has a colon (e.g. 'Stree 2: Sarkate Ka Aatank' or 'Dune: Part Two')
+        primary_title = ""
+        if ":" in title_name:
+            primary_title = " ".join(re.sub(r"[^\w\s]", " ", title_name.split(":")[0]).split())
+
         if type == "series" and season is not None:
             if episode is not None:
                 search_queries.append(f"{clean_title} S{season:02d}E{episode:02d}")
+                if primary_title:
+                    search_queries.append(f"{primary_title} S{season:02d}E{episode:02d}")
             search_queries.append(f"{clean_title} S{season:02d}")
             search_queries.append(f"{clean_title} Hindi")
             search_queries.append(clean_title)
+            if primary_title:
+                search_queries.append(f"{primary_title} Hindi")
+                search_queries.append(primary_title)
         else:
-            # Movie queries: Targeted with Year, Hindi, IMAX, Remux, 2160p
+            # Movie queries: Comprehensive Deep Torrent Sweep
+            if primary_title:
+                search_queries.append(f"{primary_title} Hindi")
+                if year:
+                    search_queries.append(f"{primary_title} {year}")
+                search_queries.append(f"{primary_title} Remux")
+                search_queries.append(f"{primary_title} 2160p")
+                search_queries.append(primary_title)
+
             if year:
                 search_queries.append(f"{clean_title} {year} Hindi")
                 search_queries.append(f"{clean_title} {year} Remux")
@@ -218,20 +249,14 @@ async def get_streams(type: str, imdb_id: str):
             search_queries.append(f"{clean_title} 2160p")
             search_queries.append(f"{clean_title} Dual Audio")
             search_queries.append(clean_title)
-
-            # Subtitle handling (e.g. 'Spider-Man: Brand New Day')
-            if ":" in title_name:
-                sub_parts = title_name.split(":")
-                sub_part = " ".join(re.sub(r"[^\w\s]", " ", sub_parts[1]).split())
-                search_queries.append(sub_part)
     else:
         search_queries.append(base_imdb)
 
     # Step 2: Fetch Torrents in Parallel via Asyncio Gather
     raw_torrents = {}
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        # Deduplicate queries while preserving order
-        unique_queries = list(dict.fromkeys(search_queries))[:8]
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+        # Deduplicate queries while preserving order (up to 12 parallel threads!)
+        unique_queries = list(dict.fromkeys(search_queries))[:12]
         tasks = [
             client.get(
                 f"https://torrents-csv.com/service/search?q={urllib.parse.quote(q)}",
