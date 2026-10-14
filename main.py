@@ -66,7 +66,7 @@ async def debug_endpoint(type: str, imdb_id: str):
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             r1 = await client.get(f"https://torrentio.strem.fun/stream/{type}/{imdb_id}.json", headers={"User-Agent": USER_AGENT})
-            results["torrentio"] = {"status": r1.status_code, "body_preview": r1.text[:300]}
+            results["torrentio"] = {"status": r1.status_code, "body_preview": r1.text[:100]}
         except Exception as e:
             results["torrentio"] = {"error": str(e)}
         try:
@@ -74,6 +74,11 @@ async def debug_endpoint(type: str, imdb_id: str):
             results["cinemeta"] = {"status": r2.status_code, "name": r2.json().get("meta", {}).get("name")}
         except Exception as e:
             results["cinemeta"] = {"error": str(e)}
+        try:
+            r3 = await client.get(f"https://apibay.org/q.php?q={imdb_id}", headers={"User-Agent": USER_AGENT})
+            results["apibay"] = {"status": r3.status_code, "count": len(r3.json()) if r3.status_code == 200 else r3.text[:100]}
+        except Exception as e:
+            results["apibay"] = {"error": str(e)}
     return results
 
 
