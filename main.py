@@ -110,8 +110,11 @@ def classify_audio_and_priority(title: str, seeders: int) -> tuple[str, int]:
             badge = "🇮🇳 [Hindi Dubbed / Multi Audio]"
         return badge, 200000 + seeders
 
-    # Priority 2: Multi-Audio / Dual Audio Packs
-    multi_keywords = ["multi audio", "multi-audio", "dual audio", "dual-audio", "multi", "dual", "dubbed"]
+    # Priority 2: Multi-Audio / Dual Audio Packs (Including Global Netflix / OTT WebRips)
+    multi_keywords = [
+        "multi audio", "multi-audio", "dual audio", "dual-audio", "multi", "dual", "dubbed",
+        "nf.webrip", "amzn.webrip", "dsnp.webrip", "nf webrip"
+    ]
     if any(k in t for k in multi_keywords):
         return "🌐 [Multi-Audio Pack]", 150000 + seeders
 
@@ -229,6 +232,35 @@ async def fetch_nyaa(query: str, client: httpx.AsyncClient):
     return []
 
 
+async def fetch_apibay(query: str, client: httpx.AsyncClient):
+    """Fetches torrents from The Pirate Bay (apibay.org) using direct IMDb ID or keywords."""
+    try:
+        url = f"https://apibay.org/q.php?q={urllib.parse.quote(query)}"
+        resp = await client.get(url, headers={"User-Agent": USER_AGENT})
+        if resp.status_code == 200:
+            data = resp.json()
+            items = []
+            if isinstance(data, list):
+                for x in data:
+                    name = x.get("name", "")
+                    if not name or name == "No results returned":
+                        continue
+                    ih = x.get("info_hash", "").strip().lower()
+                    seeders = int(x.get("seeders", 0))
+                    size_bytes = int(x.get("size", 0))
+                    if ih:
+                        items.append({
+                            "name": name,
+                            "infohash": ih,
+                            "seeders": seeders,
+                            "size_bytes": size_bytes,
+                        })
+            return items
+    except Exception as e:
+        print(f"[-] Apibay error for '{query}': {e}")
+    return []
+
+
 # 4. Stream Route with Global Torrent, IMAX & Kitsu/Nyaa Anime Aggregation
 @app.get("/stream/{type}/{imdb_id}.json")
 async def get_streams(type: str, imdb_id: str):
@@ -339,7 +371,7 @@ async def get_streams(type: str, imdb_id: str):
     else:
         search_queries.append(base_imdb)
 
-    # Step 2: Fetch Torrents in Parallel via Asyncio Gather (torrents-csv + NyaaSi)
+    # Step 2: Fetch Torrents in Parallel via Asyncio Gather (torrents-csv + NyaaSi + Apibay)
     raw_torrents = {}
     async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
         # Deduplicate queries while preserving order
@@ -356,6 +388,19 @@ async def get_streams(type: str, imdb_id: str):
         unique_nyaa = list(dict.fromkeys(nyaa_queries))[:3]
         for nq in unique_nyaa:
             tasks.append(fetch_nyaa(nq, client))
+
+        # Add The Pirate Bay (apibay.org) tasks
+        apibay_queries = []
+        if not is_kitsu and base_imdb.startswith("tt"):
+            apibay_queries.append(base_imdb)
+            if clean_title:
+                apibay_queries.append(f"{clean_title} Hindi")
+                if type == "series" and season is not None:
+                    apibay_queries.append(f"{clean_title} S{season:02d}")
+
+        unique_apibay = list(dict.fromkeys(apibay_queries))[:3]
+        for aq in unique_apibay:
+            tasks.append(fetch_apibay(aq, client))
 
         responses = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -379,6 +424,17 @@ async def get_streams(type: str, imdb_id: str):
             resp = responses[len(unique_queries) + i]
             if isinstance(resp, list):
                 print(f"    -> NyaaSi Query '{nq}' returned {len(resp)} anime torrents.")
+                for item in resp:
+                    ih = item.get("infohash", "").strip().lower()
+                    if ih and ih not in raw_torrents:
+                        raw_torrents[ih] = item
+
+        # Process The Pirate Bay (Apibay) responses
+        offset = len(unique_queries) + len(unique_nyaa)
+        for i, aq in enumerate(unique_apibay):
+            resp = responses[offset + i]
+            if isinstance(resp, list):
+                print(f"    -> PirateBay Query '{aq}' returned {len(resp)} torrents.")
                 for item in resp:
                     ih = item.get("infohash", "").strip().lower()
                     if ih and ih not in raw_torrents:
