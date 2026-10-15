@@ -13,6 +13,7 @@ import os
 import re
 import urllib.parse
 import asyncio
+import xml.etree.ElementTree as ET
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
@@ -20,7 +21,7 @@ import httpx
 
 from domain_watcher import refresh_verified_domains, get_domain
 
-app = FastAPI(title="OmniStream Addon", version="2.4.0")
+app = FastAPI(title="OmniStream Addon", version="2.6.0")
 
 # 1. Enable Wildcard CORS for Stremio Web and Native Apps
 app.add_middleware(
@@ -34,15 +35,15 @@ app.add_middleware(
 # 2. Addon Manifest
 MANIFEST = {
     "id": "community.omnistream.core",
-    "version": "2.4.0",
-    "name": "OmniStream 🌍 (Multi-Audio)",
-    "description": "Universal High-Speed Multi-Audio Streaming Provider with IMAX, 4K Remux & Smart Prioritization.",
+    "version": "2.6.0",
+    "name": "OmniStream 🌍 (Multi-Audio + Anime)",
+    "description": "Universal High-Speed Multi-Audio Streaming Provider with IMAX, 4K Remux, Kitsu Anime & Nyaa Engine.",
     "logo": "https://omnistream-jpp5.onrender.com/logo.png",
     "background": "https://images.metahub.space/background/medium/tt22084616/img",
     "resources": ["stream"],
-    "types": ["movie", "series"],
+    "types": ["movie", "series", "anime"],
     "catalogs": [],
-    "idPrefixes": ["tt"],
+    "idPrefixes": ["tt", "kitsu"],
 }
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -88,7 +89,7 @@ def classify_audio_and_priority(title: str, seeders: int) -> tuple[str, int]:
 
     # Priority 1: Indian Regional Audio (Hindi / Tamil / Telugu / Malayalam / Kannada)
     indian_keywords = [
-        "hindi", "hin", "bollywood", "dd5.1", "dd 5.1", "org dd",
+        "hindi", "bollywood", "dd5.1", "dd 5.1", "org dd",
         "tamil", "telugu", "malayalam", "kannada",
         "movierulz", "tamilblasters", "worldfree4u", "vegamovies", "katmoviehd",
         "moviesmod", "hdhub", "tombdoc", "remuxdoc", "filmyzilla", "desiremovies", "bolly4u"
@@ -179,43 +180,129 @@ def clean_display_title(raw_title: str) -> str:
     return cleaned.strip()
 
 
-# 4. Stream Route with Global Torrent & IMAX Aggregation
+def parse_size_str(size_str: str) -> int:
+    try:
+        parts = size_str.strip().split()
+        val = float(parts[0])
+        unit = parts[1].upper() if len(parts) > 1 else ""
+        if "GIB" in unit or "GB" in unit:
+            return int(val * 1024 ** 3)
+        elif "MIB" in unit or "MB" in unit:
+            return int(val * 1024 ** 2)
+        elif "KIB" in unit or "KB" in unit:
+            return int(val * 1024)
+        return int(val)
+    except Exception:
+        return 0
+
+
+async def fetch_nyaa(query: str, client: httpx.AsyncClient):
+    """Fetches anime torrents from NyaaSi RSS feed."""
+    try:
+        url = f"https://nyaa.si/?page=rss&q={urllib.parse.quote(query)}"
+        resp = await client.get(url, headers={"User-Agent": USER_AGENT})
+        if resp.status_code == 200:
+            root = ET.fromstring(resp.text)
+            channel = root.find("channel")
+            items = []
+            if channel is not None:
+                for it in channel.findall("item"):
+                    title_elem = it.find("title")
+                    title = title_elem.text if title_elem is not None and title_elem.text else ""
+                    hash_elem = it.find("{https://nyaa.si/xmlns/nyaa}infoHash")
+                    info_hash = hash_elem.text.strip().lower() if hash_elem is not None and hash_elem.text else ""
+                    seed_elem = it.find("{https://nyaa.si/xmlns/nyaa}seeders")
+                    seeders = int(seed_elem.text.strip()) if seed_elem is not None and seed_elem.text else 0
+                    size_elem = it.find("{https://nyaa.si/xmlns/nyaa}size")
+                    size_str = size_elem.text.strip() if size_elem is not None and size_elem.text else ""
+                    size_bytes = parse_size_str(size_str)
+                    if info_hash:
+                        items.append({
+                            "name": title,
+                            "infohash": info_hash,
+                            "seeders": seeders,
+                            "size_bytes": size_bytes,
+                        })
+            return items
+    except Exception as e:
+        print(f"[-] Nyaa fetch error for '{query}': {e}")
+    return []
+
+
+# 4. Stream Route with Global Torrent, IMAX & Kitsu/Nyaa Anime Aggregation
 @app.get("/stream/{type}/{imdb_id}.json")
 async def get_streams(type: str, imdb_id: str):
     print(f"\n=======================================================")
     print(f"[+] OmniStream Query: {type.upper()} | ID: {imdb_id}")
 
     parts = imdb_id.split(":")
+    is_kitsu = imdb_id.startswith("kitsu:")
     base_imdb = parts[0]
-    season = int(parts[1]) if len(parts) >= 2 else None
-    episode = int(parts[2]) if len(parts) >= 3 else None
+    season = int(parts[1]) if len(parts) >= 2 and not is_kitsu else 1
+    episode = int(parts[2]) if len(parts) >= 3 else (int(parts[1]) if is_kitsu and len(parts) >= 2 else None)
 
-    # Step 1: Resolve Title from Cinemeta with Redirect Support
     title_name = ""
+    romaji_name = ""
     year = ""
-    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-        try:
-            cinemeta_url = f"https://v3-cinemeta.strem.io/meta/{type}/{base_imdb}.json"
-            meta_res = await client.get(cinemeta_url, headers={"User-Agent": USER_AGENT})
-            if meta_res.status_code == 200:
-                meta_data = meta_res.json().get("meta", {})
-                title_name = meta_data.get("name", "")
-                year = meta_data.get("year", "")
-                print(f"[+] Resolved Title: '{title_name}' ({year})")
-        except Exception as e:
-            print(f"[-] Cinemeta error: {e}")
 
-    # Build targeted search queries (Including Subtitles, Regional Audio, IMAX, Remux & 4K)
+    # Step 1: Resolve Title (Kitsu for Anime Catalogs or Cinemeta for IMDb)
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+        if is_kitsu:
+            try:
+                kitsu_id = parts[1]
+                episode = int(parts[2]) if len(parts) >= 3 else 1
+                kitsu_url = f"https://kitsu.io/api/edge/anime/{kitsu_id}"
+                k_res = await client.get(kitsu_url, headers={"Accept": "application/vnd.api+json", "User-Agent": USER_AGENT})
+                if k_res.status_code == 200:
+                    attr = k_res.json().get("data", {}).get("attributes", {})
+                    title_name = attr.get("canonicalTitle", "")
+                    romaji_name = attr.get("titles", {}).get("en_jp", "")
+                    year = attr.get("startDate", "")[:4]
+                    print(f"[+] Resolved Kitsu Anime: '{title_name}' / '{romaji_name}' ({year}) | Ep: {episode}")
+            except Exception as e:
+                print(f"[-] Kitsu error: {e}")
+        else:
+            try:
+                cinemeta_url = f"https://v3-cinemeta.strem.io/meta/{type}/{base_imdb}.json"
+                meta_res = await client.get(cinemeta_url, headers={"User-Agent": USER_AGENT})
+                if meta_res.status_code == 200:
+                    meta_data = meta_res.json().get("meta", {})
+                    title_name = meta_data.get("name", "")
+                    year = meta_data.get("year", "")
+                    print(f"[+] Resolved Title: '{title_name}' ({year})")
+            except Exception as e:
+                print(f"[-] Cinemeta error: {e}")
+
+    # Build targeted search queries (Including Subtitles, Regional Audio, Anime, IMAX, Remux & 4K)
     search_queries = []
+    nyaa_queries = []
+
     if title_name:
         clean_title = " ".join(re.sub(r"[^\w\s]", " ", title_name).split())
+        clean_romaji = " ".join(re.sub(r"[^\w\s]", " ", romaji_name).split()) if romaji_name else ""
 
         # If title has a colon (e.g. 'Stree 2: Sarkate Ka Aatank' or 'Dune: Part Two')
         primary_title = ""
         if ":" in title_name:
             primary_title = " ".join(re.sub(r"[^\w\s]", " ", title_name.split(":")[0]).split())
 
-        if type == "series" and season is not None:
+        if is_kitsu or type == "anime":
+            ep_num = episode if episode is not None else 1
+            search_queries.append(f"{clean_title} S01E{ep_num:02d}")
+            search_queries.append(f"{clean_title} E{ep_num:02d}")
+            search_queries.append(f"{clean_title} {ep_num:02d}")
+            search_queries.append(f"{clean_title} Dual Audio")
+            search_queries.append(f"{clean_title} Hindi")
+            search_queries.append(clean_title)
+
+            nyaa_queries.append(f"{clean_title} {ep_num:02d}")
+            nyaa_queries.append(f"{clean_title} Dual Audio")
+
+            if clean_romaji and clean_romaji.lower() != clean_title.lower():
+                search_queries.append(f"{clean_romaji} {ep_num:02d}")
+                search_queries.append(clean_romaji)
+                nyaa_queries.append(f"{clean_romaji} {ep_num:02d}")
+        elif type == "series" and season is not None:
             if episode is not None:
                 search_queries.append(f"{clean_title} S{season:02d}E{episode:02d}")
                 if primary_title:
@@ -252,10 +339,10 @@ async def get_streams(type: str, imdb_id: str):
     else:
         search_queries.append(base_imdb)
 
-    # Step 2: Fetch Torrents in Parallel via Asyncio Gather
+    # Step 2: Fetch Torrents in Parallel via Asyncio Gather (torrents-csv + NyaaSi)
     raw_torrents = {}
     async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-        # Deduplicate queries while preserving order (up to 12 parallel threads!)
+        # Deduplicate queries while preserving order
         unique_queries = list(dict.fromkeys(search_queries))[:12]
         tasks = [
             client.get(
@@ -264,9 +351,17 @@ async def get_streams(type: str, imdb_id: str):
             )
             for q in unique_queries
         ]
+
+        # Add NyaaSi tasks for anime
+        unique_nyaa = list(dict.fromkeys(nyaa_queries))[:3]
+        for nq in unique_nyaa:
+            tasks.append(fetch_nyaa(nq, client))
+
         responses = await asyncio.gather(*tasks, return_exceptions=True)
 
-        for q, resp in zip(unique_queries, responses):
+        # Process torrents-csv responses
+        for i, q in enumerate(unique_queries):
+            resp = responses[i]
             if isinstance(resp, httpx.Response) and resp.status_code == 200:
                 try:
                     data = resp.json()
@@ -278,6 +373,16 @@ async def get_streams(type: str, imdb_id: str):
                             raw_torrents[ih] = item
                 except Exception:
                     pass
+
+        # Process Nyaa responses
+        for i, nq in enumerate(unique_nyaa):
+            resp = responses[len(unique_queries) + i]
+            if isinstance(resp, list):
+                print(f"    -> NyaaSi Query '{nq}' returned {len(resp)} anime torrents.")
+                for item in resp:
+                    ih = item.get("infohash", "").strip().lower()
+                    if ih and ih not in raw_torrents:
+                        raw_torrents[ih] = item
 
     print(f"[+] Total unique torrents collected: {len(raw_torrents)}")
 
