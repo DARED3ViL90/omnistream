@@ -261,6 +261,18 @@ async def fetch_apibay(query: str, client: httpx.AsyncClient):
     return []
 
 
+TRACKERS = [
+    "tracker:udp://tracker.opentrackr.org:1337/announce",
+    "tracker:udp://open.stealth.si:80/announce",
+    "tracker:udp://tracker.torrent.eu.org:451/announce",
+    "tracker:udp://explodie.org:6969/announce",
+    "tracker:udp://tracker.moeking.me:6969/announce",
+    "tracker:udp://opentracker.i2p.rocks:6969/announce",
+    "tracker:udp://tracker.dler.org:6969/announce",
+    "tracker:udp://p4p.arenabg.com:1337/announce",
+]
+
+
 # 4. Stream Route with Global Torrent, IMAX & Kitsu/Nyaa Anime Aggregation
 @app.get("/stream/{type}/{imdb_id}.json")
 async def get_streams(type: str, imdb_id: str):
@@ -459,6 +471,7 @@ async def get_streams(type: str, imdb_id: str):
             "title": f"🎬 {display_name}\n{audio_badge}\n💾 {size_str}  •  ⚡ Seeders: {seeders}",
             "infoHash": ih,
             "fileIdx": 0,
+            "sources": TRACKERS,
             "_priority": priority_score,
         }
         streams.append(stream_obj)
