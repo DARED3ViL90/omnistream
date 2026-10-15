@@ -13,15 +13,18 @@ import os
 import re
 import urllib.parse
 import asyncio
+import json
+import base64
 import xml.etree.ElementTree as ET
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 import httpx
 
 from domain_watcher import refresh_verified_domains, get_domain
+from configure_html import HTML_CONTENT
 
-app = FastAPI(title="OmniStream Addon", version="2.6.0")
+app = FastAPI(title="OmniStream Addon", version="2.8.0")
 
 # 1. Enable Wildcard CORS for Stremio Web and Native Apps
 app.add_middleware(
@@ -35,29 +38,65 @@ app.add_middleware(
 # 2. Addon Manifest
 MANIFEST = {
     "id": "community.omnistream.core",
-    "version": "2.6.0",
+    "version": "2.8.0",
     "name": "OmniStream 🌍 (Multi-Audio + Anime)",
     "description": "Universal High-Speed Multi-Audio Streaming Provider with IMAX, 4K Remux, Kitsu Anime & Nyaa Engine.",
     "logo": "https://omnistream-jpp5.onrender.com/logo.png",
     "background": "https://images.metahub.space/background/medium/tt22084616/img",
-    "resources": ["stream"],
+    "resources": ["stream", "subtitles"],
     "types": ["movie", "series", "anime"],
     "catalogs": [],
     "idPrefixes": ["tt", "kitsu"],
+    "behaviorHints": {
+        "configurable": True,
+        "configurationRequired": False
+    }
 }
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 
+def parse_user_config(config_str: str = None) -> dict:
+    defaults = {"h": 1, "m": 1, "i": 1, "a": 1, "nc": 0, "gb": 0, "rd": ""}
+    if not config_str:
+        return defaults
+    try:
+        padded = config_str + "=" * ((4 - len(config_str) % 4) % 4)
+        padded = padded.replace("-", "+").replace("_", "/")
+        raw_json = base64.b64decode(padded).decode("utf-8")
+        parsed = json.loads(raw_json)
+        defaults.update(parsed)
+        return defaults
+    except Exception:
+        return defaults
+
+
+@app.get("/configure")
+def get_configure_page():
+    return HTMLResponse(content=HTML_CONTENT)
+
+
 @app.get("/")
 @app.get("/manifest.json")
-def get_manifest():
+@app.get("/{config}/manifest.json")
+def get_manifest(config: str = None):
     headers = {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "*",
         "Access-Control-Allow-Headers": "*",
     }
     return JSONResponse(content=MANIFEST, headers=headers)
+
+
+@app.get("/subtitles/{type}/{imdb_id}.json")
+@app.get("/{config}/subtitles/{type}/{imdb_id}.json")
+def get_subtitles(type: str, imdb_id: str, config: str = None):
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "*",
+        "Access-Control-Allow-Headers": "*",
+    }
+    return JSONResponse(content={"subtitles": []}, headers=headers)
 
 
 @app.get("/logo.png")
@@ -81,7 +120,26 @@ async def get_domains():
 
 
 # 3. Smart Language Classifier & Flag Tagger
-def classify_audio_and_priority(title: str, seeders: int) -> tuple[str, int]:
+def is_cam_release(title: str) -> bool:
+    """Detects CAM, HDTS, Telesync, and PreDVD releases."""
+    cam_patterns = [
+        r"\bcam(?:rip)?\b",
+        r"\bhdcam\b",
+        r"\bhdts\b",
+        r"\btelesync\b",
+        r"\btelecine\b",
+        r"\bpredvd\b",
+        r"\bdvdscr\b",
+        r"\bhdtc\b",
+        r"\bcam-rip\b",
+    ]
+    t = title.lower()
+    return any(re.search(pat, t) for pat in cam_patterns)
+
+
+def classify_audio_and_priority(title: str, seeders: int, cfg: dict = None) -> tuple[str, int]:
+    if cfg is None:
+        cfg = {"h": 1, "m": 1, "i": 1, "a": 1}
     t = title.lower()
 
     # Special Detection: TamilMV Release
@@ -108,7 +166,8 @@ def classify_audio_and_priority(title: str, seeders: int) -> tuple[str, int]:
             badge = "🇮🇳 [Kannada Audio / Multi]"
         else:
             badge = "🇮🇳 [Hindi Dubbed / Multi Audio]"
-        return badge, 200000 + seeders
+        weight = 200000 if cfg.get("h", 1) else 10000
+        return badge, weight + seeders
 
     # Priority 2: Multi-Audio / Dual Audio Packs (Including Global Netflix / OTT WebRips)
     multi_keywords = [
@@ -116,17 +175,20 @@ def classify_audio_and_priority(title: str, seeders: int) -> tuple[str, int]:
         "nf.webrip", "amzn.webrip", "dsnp.webrip", "nf webrip"
     ]
     if any(k in t for k in multi_keywords):
-        return "🌐 [Multi-Audio Pack]", 150000 + seeders
+        weight = 150000 if cfg.get("m", 1) else 10000
+        return "🌐 [Multi-Audio Pack]", weight + seeders
 
     # Priority 3: 4K IMAX / Massive Remux Beasts (Dolby Vision / Atmos)
     if "IMAX" in title.upper() or "REMUX" in title.upper():
         badge = "🌌 [4K IMAX Enhanced]" if "IMAX" in title.upper() else "💎 [4K UHD Remux Lossless]"
-        return badge, 100000 + seeders
+        weight = 100000 if cfg.get("i", 1) else 10000
+        return badge, weight + seeders
 
     # Priority 4: Japanese / Anime
     jap_keywords = ["japanese", "jap", "subbed"]
     if any(k in t for k in jap_keywords):
-        return "🇯🇵 [Japanese / Anime]", 80000 + seeders
+        weight = 80000 if cfg.get("a", 1) else 10000
+        return "🇯🇵 [Japanese / Anime]", weight + seeders
 
     # Priority 5: Korean
     kor_keywords = ["korean", "kor"]
@@ -275,9 +337,11 @@ TRACKERS = [
 
 # 4. Stream Route with Global Torrent, IMAX & Kitsu/Nyaa Anime Aggregation
 @app.get("/stream/{type}/{imdb_id}.json")
-async def get_streams(type: str, imdb_id: str):
+@app.get("/{config}/stream/{type}/{imdb_id}.json")
+async def get_streams(type: str, imdb_id: str, config: str = None):
+    cfg = parse_user_config(config)
     print(f"\n=======================================================")
-    print(f"[+] OmniStream Query: {type.upper()} | ID: {imdb_id}")
+    print(f"[+] OmniStream Query: {type.upper()} | ID: {imdb_id} | Config: {cfg}")
 
     parts = imdb_id.split(":")
     is_kitsu = imdb_id.startswith("kitsu:")
@@ -454,14 +518,26 @@ async def get_streams(type: str, imdb_id: str):
 
     print(f"[+] Total unique torrents collected: {len(raw_torrents)}")
 
-    # Step 3: Classify Language & Calculate Smart Priority
+    # Step 3: Classify Language & Calculate Smart Priority with User Config Filters
+    exclude_cam = bool(cfg.get("nc", 0))
+    max_gb = float(cfg.get("gb", 0))
+    max_size_bytes = int(max_gb * (1024 ** 3)) if max_gb > 0 else 0
+
     streams = []
     for ih, item in raw_torrents.items():
         name = item.get("name", "Unknown Release")
         seeders = int(item.get("seeders", 0))
         size_bytes = int(item.get("size_bytes", 0))
 
-        audio_badge, priority_score = classify_audio_and_priority(name, seeders)
+        # Filter 1: Exclude CAM / Telesync / PreDVD if configured
+        if exclude_cam and is_cam_release(name):
+            continue
+
+        # Filter 2: Max File Size in GB (0 = No limit / full 80GB Remux beasts)
+        if max_size_bytes > 0 and size_bytes > max_size_bytes:
+            continue
+
+        audio_badge, priority_score = classify_audio_and_priority(name, seeders, cfg)
         quality = detect_quality(name)
         size_str = format_bytes(size_bytes)
         display_name = clean_display_title(name)
