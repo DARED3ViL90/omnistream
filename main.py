@@ -272,9 +272,12 @@ def is_valid_release(torrent_name: str, media_type: str, title: str, year: str =
     name_clean = torrent_name.lower().replace(".", " ").replace("_", " ").replace("-", " ")
     raw_name = torrent_name.lower()
 
-    # 1. Exclude sample clips, trailers, promos, extras
-    junk_patterns = [" sample ", "sample mp4", "sample mkv", "trailer", "extras", "featurettes", "bonus disc"]
-    if any(k in name_clean for k in junk_patterns):
+    # 1. Exclude sample clips, trailers, promos, extras, and 22-sec notice ads
+    junk_patterns = [
+        " sample ", "sample mp4", "sample mkv", "sample avi", ".sample.", "-sample.", "_sample_",
+        "trailer", "teaser", "promo", "extras", "featurettes", "bonus disc", "notice mp4", "notice.mp4"
+    ]
+    if any(k in name_clean or k in raw_name for k in junk_patterns):
         return False
 
     # 2. Check title keyword containment with word boundaries
@@ -687,6 +690,12 @@ async def get_streams(type: str, imdb_id: str, config: str = None):
 
         # Filter 3: Max File Size in GB (0 = No limit)
         if max_size_bytes > 0 and size_bytes > max_size_bytes:
+            continue
+
+        # Filter 4: Minimum File Size Protection (Blocks 22-second notice ads, sample clips, and tiny spam)
+        if type == "movie" and size_bytes > 0 and size_bytes < 250 * 1024 * 1024:
+            continue
+        if type in ["series", "anime"] and size_bytes > 0 and size_bytes < 40 * 1024 * 1024:
             continue
 
         audio_badge, priority_score = classify_audio_and_priority(name, seeders, cfg)
