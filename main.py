@@ -1,12 +1,14 @@
 """
-OmniStream 🌍 - Worldwide Multi-Audio Stremio Addon (Production Cloud Edition v2.4.0)
-High-Capacity Global Aggregator with IMAX & 4K Remux Engine.
-Priority Order:
-1. 🇮🇳 [TamilMV / Hindi Dubbed] (Highest Seeders at Top)
-2. 🌐 [Multi-Audio & Dual Audio Packs]
-3. 🌌 [4K IMAX & 70GB+ Remux Dolby Vision Beasts]
-4. 🇯🇵 [Anime / Japanese Dual Audio]
-5. 🇺🇸 [Original High-Seeder 4K UHD Streams]
+OmniStream 🌍 - Worldwide Multi-Audio Stremio Addon (Production Cloud Edition v3.0.0)
+High-Capacity Global Aggregator with IMAX, 4K Remux, TamilMV/TamilBlasters & Anime Engine.
+
+Fixes in v3.0.0:
+1. Removed hardcoded 'fileIdx: 0' bug (fixed 10-second PNG/sample loops & wrong episode playback in packs).
+2. Added strict release/title validation (stops unrelated movies like Wall Street matching Stree 2).
+3. Added strict season/episode filter for TV series.
+4. Added Kitsu Romaji + Absolute Episode resolution for Nyaa & AnimeTosho.
+5. Added YTS & AnimeTosho high-speed scrapers.
+6. Full TamilMV & TamilBlasters priority detection.
 """
 
 import os
@@ -24,7 +26,7 @@ import httpx
 from domain_watcher import refresh_verified_domains, get_domain
 from configure_html import HTML_CONTENT
 
-app = FastAPI(title="OmniStream Addon", version="2.8.0")
+app = FastAPI(title="OmniStream Addon", version="3.0.0")
 
 # 1. Enable Wildcard CORS for Stremio Web and Native Apps
 app.add_middleware(
@@ -38,9 +40,9 @@ app.add_middleware(
 # 2. Addon Manifest
 MANIFEST = {
     "id": "community.omnistream.core",
-    "version": "2.8.0",
+    "version": "3.0.0",
     "name": "OmniStream 🌍 (Multi-Audio + Anime)",
-    "description": "Universal High-Speed Multi-Audio Streaming Provider with IMAX, 4K Remux, Kitsu Anime & Nyaa Engine.",
+    "description": "Universal High-Speed Multi-Audio Streaming Provider with IMAX, 4K Remux, Kitsu Anime, TamilBlasters & Nyaa Engine.",
     "logo": "https://omnistream-jpp5.onrender.com/logo.png",
     "background": "https://images.metahub.space/background/medium/tt22084616/img",
     "resources": ["stream", "subtitles"],
@@ -142,8 +144,9 @@ def classify_audio_and_priority(title: str, seeders: int, cfg: dict = None) -> t
         cfg = {"h": 1, "m": 1, "i": 1, "a": 1}
     t = title.lower()
 
-    # Special Detection: TamilMV Release
+    # Special Detection: TamilMV & TamilBlasters Releases
     is_tamilmv = "tamilmv" in t or "1tamilmv" in t
+    is_tamilblasters = "tamilblasters" in t or "1tamilblasters" in t
 
     # Priority 1: Indian Regional Audio (Hindi / Tamil / Telugu / Malayalam / Kannada)
     indian_keywords = [
@@ -152,10 +155,12 @@ def classify_audio_and_priority(title: str, seeders: int, cfg: dict = None) -> t
         "movierulz", "tamilblasters", "worldfree4u", "vegamovies", "katmoviehd",
         "moviesmod", "hdhub", "tombdoc", "remuxdoc", "filmyzilla", "desiremovies", "bolly4u"
     ]
-    is_indian = any(k in t for k in indian_keywords) or is_tamilmv or bool(re.search(r"\b(tam|tel|hin)\b", t))
+    is_indian = any(k in t for k in indian_keywords) or is_tamilmv or is_tamilblasters or bool(re.search(r"\b(tam|tel|hin)\b", t))
     if is_indian:
         if is_tamilmv:
             badge = "🇮🇳 [TamilMV / Multi Audio]"
+        elif is_tamilblasters:
+            badge = "🇮🇳 [TamilBlasters / Multi Audio]"
         elif bool(re.search(r"\b(tamil|tam)\b", t)):
             badge = "🇮🇳 [Tamil Audio / Multi]"
         elif bool(re.search(r"\b(telugu|tel)\b", t)):
@@ -237,7 +242,7 @@ def detect_quality(title: str) -> str:
 def clean_display_title(raw_title: str) -> str:
     """Removes ugly domain prefixes like 'www.1tamilmv.land - ' from stream titles."""
     cleaned = re.sub(
-        r"^(?:https?://)?(?:www\.)?[a-zA-Z0-9\.\-]+\.(?:land|pm|ws|org|net|com|one|me|top|baby|xyz|solar|lat|click|lease|vip|in|cc|to|pet|dad)\s*[-_–:\s]\s*",
+        r"^(?:https?://)?(?:www\.)?[a-zA-Z0-9\.\-]+\.(?:land|pm|ws|org|net|com|one|me|top|baby|xyz|solar|lat|click|lease|vip|in|cc|to|pet|dad|tech)\s*[-_–:\s]\s*",
         "",
         raw_title,
         flags=re.IGNORECASE,
@@ -261,10 +266,88 @@ def parse_size_str(size_str: str) -> int:
         return 0
 
 
+# Release / Episode Matching Filters
+def is_valid_release(torrent_name: str, media_type: str, title: str, year: str = "", season: int = None, episode: int = None) -> bool:
+    """Stops unrelated movies or wrong season/episode releases from creeping in."""
+    name_clean = torrent_name.lower().replace(".", " ").replace("_", " ").replace("-", " ")
+    raw_name = torrent_name.lower()
+
+    # 1. Exclude sample clips, trailers, promos, extras
+    junk_patterns = [" sample ", "sample mp4", "sample mkv", "trailer", "extras", "featurettes", "bonus disc"]
+    if any(k in name_clean for k in junk_patterns):
+        return False
+
+    # 2. Check title keyword containment with word boundaries
+    clean_title = re.sub(r"[^\w\s]", " ", title.lower()).strip()
+    words = [w for w in clean_title.split() if len(w) > 1 and w not in ["the", "and", "part", "movie", "film"]]
+    if words:
+        matched_words = sum(1 for w in words if re.search(r"\b" + re.escape(w) + r"\b", name_clean))
+        if matched_words / len(words) < 0.6:
+            return False
+
+    # 3. Series Season & Episode Validation
+    if media_type == "series" and season is not None:
+        s_target = f"s{season:02d}"
+        s_alt = f"season {season}"
+        s_alt_dot = f"season.{season}"
+        is_target_season = (
+            (s_target in raw_name)
+            or (s_alt in name_clean)
+            or (s_alt_dot in raw_name)
+            or ("complete" in raw_name)
+            or ("season" not in name_clean and "s0" not in raw_name)
+        )
+        if not is_target_season:
+            return False
+
+        if episode is not None:
+            ep_patterns = [f"s{season:02d}e{episode:02d}", f"{season}x{episode:02d}", f"e{episode:02d}"]
+            is_matching_ep = any(p in raw_name for p in ep_patterns)
+            is_pack = any(k in raw_name for k in ["complete", f"season.{season}", f"season {season}", "batch"])
+
+            if not is_matching_ep and not is_pack:
+                other_eps = re.findall(r"(?:s\d{2})?e(\d{2,3})", raw_name)
+                if other_eps and f"{episode:02d}" not in other_eps:
+                    return False
+
+    return True
+
+
+def is_valid_anime(torrent_name: str, romaji: str, canonical: str, ep: int = None) -> bool:
+    """Verifies anime title and episode matching for Kitsu/Nyaa."""
+    name_lower = torrent_name.lower()
+    titles = [t for t in [romaji, canonical] if t]
+    matched = False
+    for t in titles:
+        clean = re.sub(r"[^\w\s]", " ", t.lower()).strip()
+        words = [w for w in clean.split() if len(w) > 2 and w not in ["the", "and", "part", "season", "anime"]]
+        if words:
+            if sum(1 for w in words if w in name_lower) / len(words) >= 0.5:
+                matched = True
+                break
+    if not matched:
+        return False
+
+    if ep is not None:
+        ep_patterns = [
+            f" - {ep:02d} ", f" - {ep} ",
+            f" {ep:02d} ", f" {ep:02d}.",
+            f"e{ep:02d}", f"ep{ep:02d}", f"ep {ep:02d}",
+            f"[{ep:02d}]", f"({ep:02d})",
+            "batch", "complete"
+        ]
+        if not any(p in name_lower for p in ep_patterns):
+            found_ep = re.findall(r"(?:\s-|\[|\(|ep|e)\s*0*(\d{1,3})(?:\]|\)|\s|\.mkv|\.mp4)", name_lower)
+            if found_ep and str(ep) not in found_ep:
+                return False
+    return True
+
+
+# Scraper Implementations
 async def fetch_nyaa(query: str, client: httpx.AsyncClient):
-    """Fetches anime torrents from NyaaSi RSS feed."""
+    """Fetches anime torrents from NyaaSi RSS feed (English-translated c=1_2 category)."""
     try:
-        url = f"https://nyaa.si/?page=rss&q={urllib.parse.quote(query)}"
+        url = f"https://nyaa.si/?page=rss&c=1_2&q={urllib.parse.quote(query)}"
         resp = await client.get(url, headers={"User-Agent": USER_AGENT})
         if resp.status_code == 200:
             root = ET.fromstring(resp.text)
@@ -294,11 +377,75 @@ async def fetch_nyaa(query: str, client: httpx.AsyncClient):
     return []
 
 
+async def fetch_animetosho(query: str, client: httpx.AsyncClient):
+    """Fetches high-quality anime releases from AnimeTosho API."""
+    try:
+        url = f"https://feed.animetosho.org/json?q={urllib.parse.quote(query)}"
+        resp = await client.get(url, headers={"User-Agent": USER_AGENT}, timeout=6.0)
+        if resp.status_code == 200:
+            data = resp.json()
+            items = []
+            if isinstance(data, list):
+                for x in data:
+                    ih = x.get("info_hash", "").strip().lower()
+                    if ih:
+                        items.append({
+                            "name": x.get("title", ""),
+                            "infohash": ih,
+                            "seeders": int(x.get("seeders", 0)),
+                            "size_bytes": int(x.get("total_size", 0)),
+                        })
+            return items
+    except Exception:
+        pass
+    return []
+
+
+async def fetch_yts(imdb_id: str, client: httpx.AsyncClient):
+    """Fetches verified high-quality 1080p/2160p movies directly by IMDb ID from YTS."""
+    if not imdb_id.startswith("tt"):
+        return []
+    yts_mirrors = [
+        "https://yts.mx",
+        "https://yts.pm",
+        "https://yts.lt",
+        "https://yts.bz"
+    ]
+    for mirror in yts_mirrors:
+        try:
+            url = f"{mirror}/api/v2/list_movies.json?query_term={imdb_id}"
+            resp = await client.get(url, headers={"User-Agent": USER_AGENT}, timeout=5.0)
+            if resp.status_code == 200:
+                data = resp.json().get("data", {})
+                movies = data.get("movies", [])
+                if movies:
+                    items = []
+                    m = movies[0]
+                    movie_title = m.get("title_long", m.get("title", ""))
+                    for t in m.get("torrents", []):
+                        hash_val = t.get("hash", "").strip().lower()
+                        q = t.get("quality", "1080p")
+                        size_bytes = int(t.get("size_bytes", 0))
+                        seeders = int(t.get("seeds", 0))
+                        t_type = t.get("type", "bluray")
+                        if hash_val:
+                            items.append({
+                                "name": f"{movie_title} [{q}] [{t_type.upper()}] [YTS.MX]",
+                                "infohash": hash_val,
+                                "seeders": seeders,
+                                "size_bytes": size_bytes,
+                            })
+                    return items
+        except Exception:
+            continue
+    return []
+
+
 async def fetch_apibay(query: str, client: httpx.AsyncClient):
     """Fetches torrents from The Pirate Bay (apibay.org) using direct IMDb ID or keywords."""
     try:
         url = f"https://apibay.org/q.php?q={urllib.parse.quote(query)}"
-        resp = await client.get(url, headers={"User-Agent": USER_AGENT})
+        resp = await client.get(url, headers={"User-Agent": USER_AGENT}, timeout=6.0)
         if resp.status_code == 200:
             data = resp.json()
             items = []
@@ -358,7 +505,7 @@ async def get_streams(type: str, imdb_id: str, config: str = None):
         if is_kitsu:
             try:
                 kitsu_id = parts[1]
-                episode = int(parts[2]) if len(parts) >= 3 else 1
+                episode = int(parts[2]) if len(parts) >= 3 else (int(parts[1]) if len(parts) >= 2 else 1)
                 kitsu_url = f"https://kitsu.io/api/edge/anime/{kitsu_id}"
                 k_res = await client.get(kitsu_url, headers={"Accept": "application/vnd.api+json", "User-Agent": USER_AGENT})
                 if k_res.status_code == 200:
@@ -381,76 +528,89 @@ async def get_streams(type: str, imdb_id: str, config: str = None):
             except Exception as e:
                 print(f"[-] Cinemeta error: {e}")
 
-    # Build targeted search queries (Including Subtitles, Regional Audio, Anime, IMAX, Remux & 4K)
+    # Build targeted search queries
     search_queries = []
     nyaa_queries = []
+    apibay_queries = []
 
     if title_name:
         clean_title = " ".join(re.sub(r"[^\w\s]", " ", title_name).split())
         clean_romaji = " ".join(re.sub(r"[^\w\s]", " ", romaji_name).split()) if romaji_name else ""
 
-        # If title has a colon (e.g. 'Stree 2: Sarkate Ka Aatank' or 'Dune: Part Two')
         primary_title = ""
         if ":" in title_name:
             primary_title = " ".join(re.sub(r"[^\w\s]", " ", title_name.split(":")[0]).split())
 
         if is_kitsu or type == "anime":
             ep_num = episode if episode is not None else 1
-            search_queries.append(f"{clean_title} S01E{ep_num:02d}")
-            search_queries.append(f"{clean_title} E{ep_num:02d}")
-            search_queries.append(f"{clean_title} {ep_num:02d}")
+            # Anime queries (Romaji prioritized for Nyaa/AnimeTosho)
+            anime_search_name = clean_romaji if clean_romaji else clean_title
+            nyaa_queries.append(f"{anime_search_name} {ep_num:02d}")
+            nyaa_queries.append(f"{anime_search_name} {ep_num}")
+            nyaa_queries.append(f"{anime_search_name} Dual Audio")
+            if clean_romaji and clean_title.lower() != clean_romaji.lower():
+                nyaa_queries.append(f"{clean_title} {ep_num:02d}")
+                nyaa_queries.append(f"{clean_title} Dual Audio")
+
+            search_queries.append(f"{anime_search_name} {ep_num:02d}")
             search_queries.append(f"{clean_title} Dual Audio")
             search_queries.append(f"{clean_title} Hindi")
-            search_queries.append(clean_title)
-
-            nyaa_queries.append(f"{clean_title} {ep_num:02d}")
-            nyaa_queries.append(f"{clean_title} Dual Audio")
-
-            if clean_romaji and clean_romaji.lower() != clean_title.lower():
-                search_queries.append(f"{clean_romaji} {ep_num:02d}")
-                search_queries.append(clean_romaji)
-                nyaa_queries.append(f"{clean_romaji} {ep_num:02d}")
         elif type == "series" and season is not None:
             if episode is not None:
                 search_queries.append(f"{clean_title} S{season:02d}E{episode:02d}")
+                search_queries.append(f"{clean_title} S{season:02d}E{episode:02d} Hindi")
                 if primary_title:
                     search_queries.append(f"{primary_title} S{season:02d}E{episode:02d}")
             search_queries.append(f"{clean_title} S{season:02d}")
+            search_queries.append(f"{clean_title} S{season:02d} Hindi")
             search_queries.append(f"{clean_title} Hindi")
-            search_queries.append(clean_title)
             if primary_title:
+                search_queries.append(f"{primary_title} S{season:02d}")
                 search_queries.append(f"{primary_title} Hindi")
-                search_queries.append(primary_title)
+
+            apibay_queries.append(f"{clean_title} S{season:02d}")
+            if episode is not None:
+                apibay_queries.append(f"{clean_title} S{season:02d}E{episode:02d}")
         else:
-            # Movie queries: Comprehensive Deep Torrent Sweep
+            # Movie queries
             if primary_title:
                 search_queries.append(f"{primary_title} Hindi")
+                search_queries.append(f"{primary_title} TamilMV")
+                search_queries.append(f"{primary_title} TamilBlasters")
                 if year:
                     search_queries.append(f"{primary_title} {year}")
                 search_queries.append(f"{primary_title} Remux")
                 search_queries.append(f"{primary_title} 2160p")
-                search_queries.append(primary_title)
 
             if year:
                 search_queries.append(f"{clean_title} {year} Hindi")
+                search_queries.append(f"{clean_title} {year} TamilMV")
+                search_queries.append(f"{clean_title} {year} TamilBlasters")
                 search_queries.append(f"{clean_title} {year} Remux")
-                search_queries.append(f"{clean_title} {year} IMAX")
                 search_queries.append(f"{clean_title} {year} 2160p")
                 search_queries.append(f"{clean_title} {year}")
 
             search_queries.append(f"{clean_title} Hindi")
+            search_queries.append(f"{clean_title} TamilMV")
+            search_queries.append(f"{clean_title} TamilBlasters")
             search_queries.append(f"{clean_title} Remux")
             search_queries.append(f"{clean_title} IMAX")
             search_queries.append(f"{clean_title} 2160p")
             search_queries.append(f"{clean_title} Dual Audio")
             search_queries.append(clean_title)
+
+            if base_imdb.startswith("tt"):
+                apibay_queries.append(base_imdb)
+            apibay_queries.append(f"{clean_title} Hindi")
+            apibay_queries.append(clean_title)
     else:
         search_queries.append(base_imdb)
+        if base_imdb.startswith("tt"):
+            apibay_queries.append(base_imdb)
 
-    # Step 2: Fetch Torrents in Parallel via Asyncio Gather (torrents-csv + NyaaSi + Apibay)
+    # Step 2: Parallel Fetch via Asyncio Gather
     raw_torrents = {}
     async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-        # Deduplicate queries while preserving order
         unique_queries = list(dict.fromkeys(search_queries))[:12]
         tasks = [
             client.get(
@@ -460,34 +620,30 @@ async def get_streams(type: str, imdb_id: str, config: str = None):
             for q in unique_queries
         ]
 
-        # Add NyaaSi tasks for anime
-        unique_nyaa = list(dict.fromkeys(nyaa_queries))[:3]
+        # Nyaa tasks for anime
+        unique_nyaa = list(dict.fromkeys(nyaa_queries))[:4]
         for nq in unique_nyaa:
             tasks.append(fetch_nyaa(nq, client))
+            tasks.append(fetch_animetosho(nq, client))
 
-        # Add The Pirate Bay (apibay.org) tasks
-        apibay_queries = []
-        if not is_kitsu and base_imdb.startswith("tt"):
-            apibay_queries.append(base_imdb)
-            if clean_title:
-                apibay_queries.append(f"{clean_title} Hindi")
-                if type == "series" and season is not None:
-                    apibay_queries.append(f"{clean_title} S{season:02d}")
-
-        unique_apibay = list(dict.fromkeys(apibay_queries))[:3]
+        # PirateBay (Apibay) tasks
+        unique_apibay = list(dict.fromkeys(apibay_queries))[:4]
         for aq in unique_apibay:
             tasks.append(fetch_apibay(aq, client))
 
+        # YTS for movies
+        if type == "movie" and base_imdb.startswith("tt"):
+            tasks.append(fetch_yts(base_imdb, client))
+
         responses = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Process torrents-csv responses
+        # 1. Process torrents-csv
         for i, q in enumerate(unique_queries):
             resp = responses[i]
             if isinstance(resp, httpx.Response) and resp.status_code == 200:
                 try:
                     data = resp.json()
                     items = data.get("torrents", [])
-                    print(f"    -> Parallel Query '{q}' returned {len(items)} torrents.")
                     for item in items:
                         ih = item.get("infohash", "").strip().lower()
                         if ih and ih not in raw_torrents:
@@ -495,30 +651,17 @@ async def get_streams(type: str, imdb_id: str, config: str = None):
                 except Exception:
                     pass
 
-        # Process Nyaa responses
-        for i, nq in enumerate(unique_nyaa):
-            resp = responses[len(unique_queries) + i]
+        # 2. Process remaining responses (Nyaa, AnimeTosho, Apibay, YTS)
+        for resp in responses[len(unique_queries):]:
             if isinstance(resp, list):
-                print(f"    -> NyaaSi Query '{nq}' returned {len(resp)} anime torrents.")
                 for item in resp:
                     ih = item.get("infohash", "").strip().lower()
                     if ih and ih not in raw_torrents:
                         raw_torrents[ih] = item
 
-        # Process The Pirate Bay (Apibay) responses
-        offset = len(unique_queries) + len(unique_nyaa)
-        for i, aq in enumerate(unique_apibay):
-            resp = responses[offset + i]
-            if isinstance(resp, list):
-                print(f"    -> PirateBay Query '{aq}' returned {len(resp)} torrents.")
-                for item in resp:
-                    ih = item.get("infohash", "").strip().lower()
-                    if ih and ih not in raw_torrents:
-                        raw_torrents[ih] = item
+    print(f"[+] Total raw torrents collected: {len(raw_torrents)}")
 
-    print(f"[+] Total unique torrents collected: {len(raw_torrents)}")
-
-    # Step 3: Classify Language & Calculate Smart Priority with User Config Filters
+    # Step 3: Validate and Classify Torrents
     exclude_cam = bool(cfg.get("nc", 0))
     max_gb = float(cfg.get("gb", 0))
     max_size_bytes = int(max_gb * (1024 ** 3)) if max_gb > 0 else 0
@@ -529,11 +672,20 @@ async def get_streams(type: str, imdb_id: str, config: str = None):
         seeders = int(item.get("seeders", 0))
         size_bytes = int(item.get("size_bytes", 0))
 
-        # Filter 1: Exclude CAM / Telesync / PreDVD if configured
+        # Filter 1: Release & Title Validation (Stops unrelated movies & wrong episodes!)
+        if title_name:
+            if is_kitsu or type == "anime":
+                if not is_valid_anime(name, romaji_name, title_name, episode):
+                    continue
+            else:
+                if not is_valid_release(name, type, title_name, year, season, episode):
+                    continue
+
+        # Filter 2: Exclude CAM / Telesync / PreDVD if configured
         if exclude_cam and is_cam_release(name):
             continue
 
-        # Filter 2: Max File Size in GB (0 = No limit / full 80GB Remux beasts)
+        # Filter 3: Max File Size in GB (0 = No limit)
         if max_size_bytes > 0 and size_bytes > max_size_bytes:
             continue
 
@@ -542,26 +694,29 @@ async def get_streams(type: str, imdb_id: str, config: str = None):
         size_str = format_bytes(size_bytes)
         display_name = clean_display_title(name)
 
+        # CRITICAL FIX: No 'fileIdx: 0'!
+        # Omitting fileIdx allows Stremio's internal video selector to auto-select
+        # the main movie file (skipping sample.mp4, pngs, screens) and auto-match
+        # the exact episode inside complete season packs!
         stream_obj = {
             "name": f"OmniStream 🌍\n{quality}",
             "title": f"🎬 {display_name}\n{audio_badge}\n💾 {size_str}  •  ⚡ Seeders: {seeders}",
             "infoHash": ih,
-            "fileIdx": 0,
             "sources": TRACKERS,
             "_priority": priority_score,
         }
         streams.append(stream_obj)
 
-    # Step 4: Sort by Smart Priority (TamilMV/Hindi 1st, Multi 2nd, 4K IMAX/Remux 3rd, Highest Seeders Top)
+    # Step 4: Sort by Smart Priority (TamilMV/TamilBlasters/Hindi 1st, Multi 2nd, 4K IMAX/Remux 3rd)
     streams.sort(key=lambda x: x["_priority"], reverse=True)
 
     for s in streams:
         del s["_priority"]
 
-    # Top 60 highest-ranked streams (Massive Library Output!)
+    # Top 60 highest-ranked verified streams
     streams = streams[:60]
 
-    print(f"[+] Returning {len(streams)} Verified Ranked Streams (IMAX & TamilMV prioritized)!")
+    print(f"[+] Returning {len(streams)} Verified Ranked Streams for Stremio!")
     headers = {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "*",
