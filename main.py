@@ -361,28 +361,47 @@ def is_valid_release(torrent_name: str, media_type: str, title: str, year: str =
 
     # 3. Series Season & Episode Validation
     if media_type == "series" and season is not None:
-        s_target = f"s{season:02d}"
-        s_alt = f"season {season}"
-        s_alt_dot = f"season.{season}"
-        is_target_season = (
-            (s_target in raw_name)
-            or (s_alt in name_clean)
-            or (s_alt_dot in raw_name)
-            or ("complete" in raw_name)
-            or ("season" not in name_clean and "s0" not in raw_name)
-        )
-        if not is_target_season:
-            return False
+        # Check explicit season numbers in torrent
+        seasons_found = re.findall(r"\bs(\d{1,2})\b", raw_name)
+        seasons_found += re.findall(r"\bseason\s*(\d{1,2})\b", name_clean)
+        seasons_found += re.findall(r"\bs(\d{1,2})e\d+", raw_name)
+        explicit_seasons = [int(s) for s in seasons_found]
+
+        if explicit_seasons:
+            if season not in explicit_seasons:
+                return False
+        else:
+            # If no explicit season tag, only allow if marked as complete pack or if season is 1
+            is_generic_pack = any(k in raw_name for k in ["complete", "batch", "all episodes", "boxset"])
+            if season != 1 and not is_generic_pack:
+                return False
 
         if episode is not None:
-            ep_patterns = [f"s{season:02d}e{episode:02d}", f"{season}x{episode:02d}", f"e{episode:02d}"]
-            is_matching_ep = any(p in raw_name for p in ep_patterns)
-            is_pack = any(k in raw_name for k in ["complete", f"season.{season}", f"season {season}", "batch"])
+            # Check for season complete pack
+            is_pack = any(k in raw_name for k in [
+                "complete", f"s{season:02d} pack", f"season {season} pack",
+                f"season {season}", f"season.{season}", "batch", "boxset"
+            ]) and not any(p in raw_name for p in [f"e{episode:02d}", f"ep{episode:02d}"])
+
+            # Check explicit episode numbers
+            eps_found = re.findall(r"(?:s\d{1,2})?e(?:p)?\s*(\d{1,3})\b", raw_name)
+            eps_found += re.findall(r"\bep(?:isode)?\s*(\d{1,3})\b", name_clean)
+            eps_found += re.findall(r"\b\d{1,2}x(\d{1,3})\b", raw_name)
+            explicit_eps = [int(e) for e in eps_found]
+
+            ep_patterns = [
+                f"s{season:02d}e{episode:02d}",
+                f"s{season:02d}ep{episode:02d}",
+                f"{season}x{episode:02d}",
+                f"e{episode:02d}",
+                f"ep{episode:02d}",
+                f"ep {episode}",
+                f"episode {episode}",
+            ]
+            is_matching_ep = any(p in raw_name or p in name_clean for p in ep_patterns) or (episode in explicit_eps)
 
             if not is_matching_ep and not is_pack:
-                other_eps = re.findall(r"(?:s\d{2})?e(\d{2,3})", raw_name)
-                if other_eps and f"{episode:02d}" not in other_eps:
-                    return False
+                return False
 
     return True
 
