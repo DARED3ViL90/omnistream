@@ -535,6 +535,45 @@ async def fetch_yts(imdb_id: str, client: httpx.AsyncClient):
     return []
 
 
+async def fetch_eztv(imdb_id: str, season: int, episode: int, client: httpx.AsyncClient):
+    """Fetches high-quality series/TV episodes directly from EZTV API."""
+    if not imdb_id.startswith("tt"):
+        return []
+    numeric_id = imdb_id.replace("tt", "")
+    mirrors = ["https://eztv.tf", "https://eztvx.to", "https://eztv.li"]
+    for m in mirrors:
+        try:
+            url = f"{m}/api/get-torrents?imdb_id={numeric_id}&limit=100"
+            resp = await client.get(url, headers={"User-Agent": USER_AGENT}, timeout=4.0)
+            if resp.status_code == 200:
+                data = resp.json()
+                torrents = data.get("torrents", [])
+                items = []
+                s_str = str(season) if season is not None else "1"
+                e_str = str(episode) if episode is not None else None
+                for t in torrents:
+                    t_season = str(t.get("season", ""))
+                    t_episode = str(t.get("episode", ""))
+                    if t_season == s_str and (e_str is None or t_episode == e_str):
+                        ih = t.get("hash", "").strip().lower()
+                        name = t.get("title", "")
+                        seeds = int(t.get("seeds", 0))
+                        size_bytes = int(t.get("size_bytes", 0))
+                        if ih and name:
+                            items.append({
+                                "name": name,
+                                "infohash": ih,
+                                "seeders": seeds,
+                                "size_bytes": size_bytes
+                            })
+                if items:
+                    print(f"    -> EZTV mirror '{m}' returned {len(items)} torrents for S{season:02d}E{episode:02d}!")
+                    return items
+        except Exception:
+            continue
+    return []
+
+
 async def fetch_apibay(query: str, client: httpx.AsyncClient):
     """Fetches torrents from The Pirate Bay (apibay.org with automatic thepiratebay10.org / tpb.party failover)."""
     items = []
@@ -777,6 +816,10 @@ async def get_streams(type: str, imdb_id: str, config: str = None):
         # YTS for movies
         if type == "movie" and base_imdb.startswith("tt"):
             tasks.append(fetch_yts(base_imdb, client))
+
+        # EZTV for series / TV shows
+        if type == "series" and base_imdb.startswith("tt"):
+            tasks.append(fetch_eztv(base_imdb, season, episode, client))
 
         # CastleTV Cloud CDN task (Instant multi-audio cloud streams)
         castle_task_idx = len(tasks)
