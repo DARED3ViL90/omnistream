@@ -195,58 +195,74 @@ def classify_audio_and_priority(title: str, seeders: int, cfg: dict = None) -> t
     is_tamilblasters = "tamilblasters" in t or "1tamilblasters" in t
 
     # Priority 1: Indian Regional Audio (Hindi / Tamil / Telugu / Malayalam / Kannada)
-    indian_keywords = [
-        "hindi", "bollywood", "dd5.1", "dd 5.1", "org dd",
-        "tamil", "telugu", "malayalam", "kannada",
-        "movierulz", "tamilblasters", "worldfree4u", "vegamovies", "katmoviehd",
-        "moviesmod", "hdhub", "tombdoc", "remuxdoc", "filmyzilla", "desiremovies", "bolly4u"
-    ]
-    is_indian = any(k in t for k in indian_keywords) or is_tamilmv or is_tamilblasters or bool(re.search(r"\b(tam|tel|hin)\b", t))
-    if is_indian:
+    has_hindi = any(k in t for k in ["hindi", "bollywood", "dd5.1", "dd 5.1", "org dd"]) or bool(re.search(r"\bhin\b", t))
+    has_tamil = "tamil" in t or bool(re.search(r"\btam\b", t))
+    has_telugu = "telugu" in t or bool(re.search(r"\btel\b", t))
+    has_malayalam = "malayalam" in t or bool(re.search(r"\bmal\b", t))
+    has_kannada = "kannada" in t or bool(re.search(r"\bkan\b", t))
+    is_indian_tracker = is_tamilmv or is_tamilblasters or any(k in t for k in ["movierulz", "worldfree4u", "vegamovies", "katmoviehd", "moviesmod", "hdhub", "filmyzilla", "desiremovies", "bolly4u"])
+
+    if has_hindi or has_tamil or has_telugu or has_malayalam or has_kannada or is_indian_tracker:
         if is_tamilmv:
             badge = "🇮🇳 [TamilMV / Multi Audio]"
         elif is_tamilblasters:
             badge = "🇮🇳 [TamilBlasters / Multi Audio]"
-        elif bool(re.search(r"\b(tamil|tam)\b", t)):
+        elif has_hindi:
+            badge = "🇮🇳 [Hindi Dubbed / Audio]"
+        elif has_tamil:
             badge = "🇮🇳 [Tamil Audio / Multi]"
-        elif bool(re.search(r"\b(telugu|tel)\b", t)):
+        elif has_telugu:
             badge = "🇮🇳 [Telugu Audio / Multi]"
-        elif "malayalam" in t:
+        elif has_malayalam:
             badge = "🇮🇳 [Malayalam Audio / Multi]"
-        elif "kannada" in t:
+        elif has_kannada:
             badge = "🇮🇳 [Kannada Audio / Multi]"
         else:
-            badge = "🇮🇳 [Hindi Dubbed / Multi Audio]"
+            badge = "🇮🇳 [Desi / Indian Release]"
         weight = 200000 if cfg.get("h", 1) else 10000
         return badge, weight + seeders
 
-    # Priority 2: Multi-Audio / Dual Audio Packs (Including Global Netflix / OTT WebRips)
-    multi_keywords = [
-        "multi audio", "multi-audio", "dual audio", "dual-audio", "multi", "dual", "dubbed",
-        "nf.webrip", "amzn.webrip", "dsnp.webrip", "nf webrip"
-    ]
+    # Priority 2: European Scene Multi Releases (e.g. HiggsBoson, French/English MULTI)
+    is_euro_multi = any(g in t for g in ["higgsboson", "vff", "vostfr", "truefrench", "subzero"]) or (
+        bool(re.search(r"\bmulti\b", t)) and not any(k in t for k in ["audio", "dual"])
+    )
+    if is_euro_multi:
+        if any(f in t for f in ["french", "vff", "vostfr", "higgsboson"]):
+            badge = "🇫🇷 [French / English (Multi)]"
+        elif "ita" in t or "italian" in t:
+            badge = "🇮🇹 [Italian / English (Multi)]"
+        elif "ger" in t or "german" in t or "deutsch" in t:
+            badge = "🇩🇪 [German / English (Multi)]"
+        elif "spa" in t or "spanish" in t or "esp" in t:
+            badge = "🇪🇸 [Spanish / English (Multi)]"
+        else:
+            badge = "🇪🇺 [European Multi / English]"
+        return badge, 50000 + seeders
+
+    # Priority 3: True Multi-Audio / Dual Audio Packs
+    multi_keywords = ["multi audio", "multi-audio", "dual audio", "dual-audio", "multi-dub", "dual-dub"]
     if any(k in t for k in multi_keywords):
         weight = 150000 if cfg.get("m", 1) else 10000
         return "🌐 [Multi-Audio Pack]", weight + seeders
 
-    # Priority 3: 4K IMAX / Massive Remux Beasts (Dolby Vision / Atmos)
+    # Priority 4: 4K IMAX / Massive Remux Beasts (Dolby Vision / Atmos)
     if "IMAX" in title.upper() or "REMUX" in title.upper():
         badge = "🌌 [4K IMAX Enhanced]" if "IMAX" in title.upper() else "💎 [4K UHD Remux Lossless]"
         weight = 100000 if cfg.get("i", 1) else 10000
         return badge, weight + seeders
 
-    # Priority 4: Japanese / Anime
+    # Priority 5: Japanese / Anime
     jap_keywords = ["japanese", "jap", "subbed"]
     if any(k in t for k in jap_keywords):
         weight = 80000 if cfg.get("a", 1) else 10000
         return "🇯🇵 [Japanese / Anime]", weight + seeders
 
-    # Priority 5: Korean
+    # Priority 6: Korean
     kor_keywords = ["korean", "kor"]
     if any(k in t for k in kor_keywords):
         return "🇰🇷 [Korean Audio]", 60000 + seeders
 
-    # Priority 6: Spanish / French / German
+    # Priority 7: Spanish / French / German
     if any(k in t for k in ["spanish", "latino", "esp"]):
         return "🇪🇸 [Spanish Audio]", 40000 + seeders
     if any(k in t for k in ["french", "vf", "vostfr"]):
@@ -333,6 +349,15 @@ def is_valid_release(torrent_name: str, media_type: str, title: str, year: str =
         matched_words = sum(1 for w in words if re.search(r"\b" + re.escape(w) + r"\b", name_clean))
         if matched_words / len(words) < 0.6:
             return False
+
+    # 2.5 Regional TV spin-off disambiguation (e.g. Bigg Boss Hindi vs Bigg Boss Telugu / Tamil)
+    if media_type == "series":
+        regional_langs = ["telugu", "tamil", "kannada", "malayalam", "marathi", "bengali", "punjabi"]
+        for r_lang in regional_langs:
+            if r_lang not in clean_title:
+                if f"({r_lang})" in raw_name or f"[{r_lang}]" in raw_name or re.search(rf"\b{clean_title}\s*(?:\([^)]*\)|\[[^\]]*\]|\-)?\s*{r_lang}\b", name_clean):
+                    if not any(d in name_clean for d in ["dubbed", "audio"]):
+                        return False
 
     # 3. Series Season & Episode Validation
     if media_type == "series" and season is not None:
