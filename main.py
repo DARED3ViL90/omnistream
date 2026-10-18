@@ -53,6 +53,10 @@ MANIFEST = {
     "behaviorHints": {
         "configurable": True,
         "configurationRequired": False
+    },
+    "stremioAddonsConfig": {
+        "issuer": "https://stremio-addons.net",
+        "signature": "eyJhbGciOiJkaXIiLCJlbmMiOiJBMTI4Q0JDLUhTMjU2In0..c8f4hXyjLyVgo3kF3DZR8Q.ZOA5c8JB3fagOg1r_MZ1L4XPr2haT21lnefd0TKBXvzX2NmR3GiTok7vNqNblEwI5CE-G1uofKMxV5EgNXTarMGlw2dhKKnDI2T0AqUbpt33wXK2GKCyJ3GjKJwZlAEP.MqLufXBdvR3cGfNYwoldQQ"
     }
 }
 
