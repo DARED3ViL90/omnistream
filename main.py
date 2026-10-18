@@ -571,9 +571,18 @@ async def get_streams(type: str, imdb_id: str, config: str = None):
                 search_queries.append(f"{primary_title} S{season:02d}")
                 search_queries.append(f"{primary_title} Hindi")
 
+            search_queries.append(f"{clean_title} TamilMV")
+            search_queries.append(f"{clean_title} TamilBlasters")
+            search_queries.append(clean_title)
+            if primary_title and primary_title.lower() != clean_title.lower():
+                search_queries.append(primary_title)
+
             apibay_queries.append(f"{clean_title} S{season:02d}")
             if episode is not None:
                 apibay_queries.append(f"{clean_title} S{season:02d}E{episode:02d}")
+            apibay_queries.append(clean_title)
+            if base_imdb.startswith("tt"):
+                apibay_queries.append(base_imdb)
         else:
             # Movie queries
             if primary_title:
@@ -613,7 +622,7 @@ async def get_streams(type: str, imdb_id: str, config: str = None):
 
     # Step 2: Parallel Fetch via Asyncio Gather
     raw_torrents = {}
-    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
         unique_queries = list(dict.fromkeys(search_queries))[:12]
         tasks = [
             client.get(
