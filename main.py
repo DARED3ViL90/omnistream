@@ -25,6 +25,7 @@ import httpx
 
 from domain_watcher import refresh_verified_domains, get_domain
 from configure_html import HTML_CONTENT
+from castle_engine import fetch_castle_streams
 
 app = FastAPI(title="OmniStream Addon", version="3.0.0")
 
@@ -777,6 +778,10 @@ async def get_streams(type: str, imdb_id: str, config: str = None):
         if type == "movie" and base_imdb.startswith("tt"):
             tasks.append(fetch_yts(base_imdb, client))
 
+        # CastleTV Cloud CDN task (Instant multi-audio cloud streams)
+        castle_task_idx = len(tasks)
+        tasks.append(fetch_castle_streams(type, title_name, year, season, episode))
+
         responses = await asyncio.gather(*tasks, return_exceptions=True)
 
         # 1. Process torrents-csv
@@ -794,14 +799,18 @@ async def get_streams(type: str, imdb_id: str, config: str = None):
                     pass
 
         # 2. Process remaining responses (Nyaa, AnimeTosho, Apibay, YTS)
-        for resp in responses[len(unique_queries):]:
+        for resp in responses[len(unique_queries):castle_task_idx]:
             if isinstance(resp, list):
                 for item in resp:
                     ih = item.get("infohash", "").strip().lower()
                     if ih and ih not in raw_torrents:
                         raw_torrents[ih] = item
 
-    print(f"[+] Total raw torrents collected: {len(raw_torrents)}")
+        # 3. Extract CastleTV Cloud CDN streams
+        castle_resp = responses[castle_task_idx]
+        castle_streams = castle_resp if isinstance(castle_resp, list) else []
+
+    print(f"[+] Total raw torrents collected: {len(raw_torrents)} | Castle Cloud Streams: {len(castle_streams)}")
 
     # Step 3: Validate and Classify Torrents
     exclude_cam = bool(cfg.get("nc", 0))
@@ -861,16 +870,17 @@ async def get_streams(type: str, imdb_id: str, config: str = None):
     for s in streams:
         del s["_priority"]
 
-    # Top 60 highest-ranked verified streams
-    streams = streams[:60]
+    # Combine Castle Cloud CDN streams (Instant Play) with Ranked Torrents
+    final_streams = castle_streams + streams
+    final_streams = final_streams[:65]
 
-    print(f"[+] Returning {len(streams)} Verified Ranked Streams for Stremio!")
+    print(f"[+] Returning {len(final_streams)} Verified Ranked Streams for Stremio ({len(castle_streams)} Castle Cloud CDN)!")
     headers = {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "*",
         "Access-Control-Allow-Headers": "*",
     }
-    return JSONResponse(content={"streams": streams}, headers=headers)
+    return JSONResponse(content={"streams": final_streams}, headers=headers)
 
 
 if __name__ == "__main__":
