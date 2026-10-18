@@ -112,17 +112,29 @@ def get_logo():
 
 @app.get("/debug/{query}")
 async def debug_query(query: str):
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        apibay_res = await fetch_apibay(query, client)
-        csv_res = await client.get(f"https://torrents-csv.com/service/search?q={urllib.parse.quote(query)}")
-        csv_items = csv_res.json().get("torrents", []) if csv_res.status_code == 200 else []
-        return {
-            "query": query,
-            "apibay_count": len(apibay_res),
-            "csv_count": len(csv_items),
-            "apibay_sample": [x.get("name") for x in apibay_res[:3]],
-            "csv_sample": [x.get("name") for x in csv_items[:3]],
-        }
+    debug_info = {}
+    async with httpx.AsyncClient(timeout=6.0) as client:
+        try:
+            url = f"https://apibay.org/q.php?q={urllib.parse.quote(query)}"
+            r = await client.get(url, headers={"User-Agent": USER_AGENT})
+            debug_info["apibay_status"] = r.status_code
+            debug_info["apibay_raw_type"] = type(r.json()).__name__ if r.status_code == 200 else r.text[:200]
+            debug_info["apibay_count"] = len(r.json()) if isinstance(r.json(), list) else 0
+            if isinstance(r.json(), list) and len(r.json()) > 0:
+                debug_info["apibay_first"] = r.json()[0].get("name")
+        except Exception as e:
+            debug_info["apibay_error"] = str(e)
+            debug_info["apibay_error_type"] = type(e).__name__
+
+        try:
+            url_csv = f"https://torrents-csv.com/service/search?q={urllib.parse.quote(query)}"
+            rc = await client.get(url_csv, headers={"User-Agent": USER_AGENT})
+            debug_info["csv_status"] = rc.status_code
+            debug_info["csv_count"] = len(rc.json().get("torrents", [])) if rc.status_code == 200 else 0
+        except Exception as e:
+            debug_info["csv_error"] = str(e)
+
+    return debug_info
 
 @app.get("/domains")
 async def get_domains():
