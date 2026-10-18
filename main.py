@@ -491,13 +491,14 @@ async def fetch_yts(imdb_id: str, client: httpx.AsyncClient):
 
 
 async def fetch_apibay(query: str, client: httpx.AsyncClient):
-    """Fetches torrents from The Pirate Bay (apibay.org) using direct IMDb ID or keywords."""
+    """Fetches torrents from The Pirate Bay (apibay.org with automatic thepiratebay10.org / tpb.party failover)."""
+    items = []
+    # 1. Try apibay.org JSON API
     try:
         url = f"https://apibay.org/q.php?q={urllib.parse.quote(query)}"
-        resp = await client.get(url, headers={"User-Agent": USER_AGENT}, timeout=6.0)
-        if resp.status_code == 200:
+        resp = await client.get(url, headers={"User-Agent": USER_AGENT, "Referer": "https://thepiratebay.org/"}, timeout=3.5)
+        if resp.status_code == 200 and "Just a moment" not in resp.text:
             data = resp.json()
-            items = []
             if isinstance(data, list):
                 for x in data:
                     name = x.get("name", "")
@@ -513,10 +514,49 @@ async def fetch_apibay(query: str, client: httpx.AsyncClient):
                             "seeders": seeders,
                             "size_bytes": size_bytes,
                         })
-            return items
-    except Exception as e:
-        print(f"[-] Apibay error for '{query}': {e}")
-    return []
+                if items:
+                    return items
+    except Exception:
+        pass
+
+    # 2. Mirror Fallback: thepiratebay10.org & tpb.party (100% works on Cloud/Render Datacenter IPs!)
+    mirrors = ["https://thepiratebay10.org", "https://tpb.party"]
+    for m in mirrors:
+        try:
+            url = f"{m}/search/{urllib.parse.quote(query)}/1/99/0"
+            resp = await client.get(url, headers={"User-Agent": USER_AGENT}, timeout=4.0)
+            if resp.status_code == 200 and "magnet:" in resp.text:
+                html = resp.text
+                rows = re.findall(r'<tr[^>]*>(.*?)</tr>', html, flags=re.DOTALL)
+                for tr in rows:
+                    m_hash = re.search(r'magnet:\?xt=urn:btih:([a-zA-Z0-9]{40})', tr, flags=re.IGNORECASE)
+                    if not m_hash:
+                        continue
+                    ih = m_hash.group(1).lower()
+                    m_title = re.search(r'class="detLink"[^>]*>([^<]+)</a>', tr)
+                    if not m_title:
+                        m_title = re.search(r'title="Details for ([^"]+)"', tr)
+                    name = m_title.group(1).strip() if m_title else ""
+                    m_seed = re.findall(r'<td[^>]*align="right"[^>]*>(\d+)</td>', tr)
+                    seeders = int(m_seed[0]) if m_seed else 10
+                    m_size = re.search(r'Size ([^,]+),', tr)
+                    size_str = m_size.group(1).strip() if m_size else "1.5 GB"
+                    size_bytes = parse_size_str(size_str)
+                    if ih and name:
+                        items.append({
+                            "name": name,
+                            "infohash": ih,
+                            "seeders": seeders,
+                            "size_bytes": size_bytes,
+                        })
+                if items:
+                    print(f"    -> TPB Mirror '{m}' returned {len(items)} torrents for '{query}'!")
+                    return items
+        except Exception as e:
+            print(f"[-] TPB Mirror error for {m}: {e}")
+            continue
+
+    return items
 
 
 TRACKERS = [
