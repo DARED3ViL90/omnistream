@@ -846,6 +846,12 @@ async def get_streams(type: str, imdb_id: str, config: str = None):
         if type in ["series", "anime"] and size_bytes > 0 and size_bytes < 40 * 1024 * 1024:
             continue
 
+        # Filter 5: Dead Torrent Elimination
+        # Torrents with 0 seeders will never load and freeze the Stremio player!
+        # Only keep torrents with at least 1 verified seeder.
+        if seeders <= 0:
+            continue
+
         audio_badge, priority_score = classify_audio_and_priority(name, seeders, cfg)
         quality = detect_quality(name)
         size_str = format_bytes(size_bytes)
