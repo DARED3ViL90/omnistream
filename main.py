@@ -110,6 +110,20 @@ def get_logo():
     return JSONResponse(status_code=404, content={"error": "Logo not found"})
 
 
+@app.get("/debug/{query}")
+async def debug_query(query: str):
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        apibay_res = await fetch_apibay(query, client)
+        csv_res = await client.get(f"https://torrents-csv.com/service/search?q={urllib.parse.quote(query)}")
+        csv_items = csv_res.json().get("torrents", []) if csv_res.status_code == 200 else []
+        return {
+            "query": query,
+            "apibay_count": len(apibay_res),
+            "csv_count": len(csv_items),
+            "apibay_sample": [x.get("name") for x in apibay_res[:3]],
+            "csv_sample": [x.get("name") for x in csv_items[:3]],
+        }
+
 @app.get("/domains")
 async def get_domains():
     domains = await refresh_verified_domains()
