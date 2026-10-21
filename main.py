@@ -44,7 +44,7 @@ MANIFEST = {
     "version": "3.0.0",
     "name": "OmniStream 🌍 (Multi-Audio + Anime)",
     "description": "Universal High-Speed Multi-Audio Streaming Provider with IMAX, 4K Remux, Kitsu Anime, TamilBlasters & Nyaa Engine.",
-    "logo": "https://omnistream-jpp5.onrender.com/logo.png",
+    "logo": "https://omnistream.d3vil90.duckdns.org/logo.png",
     "background": "https://images.metahub.space/background/medium/tt22084616/img",
     "resources": ["stream", "subtitles"],
     "types": ["movie", "series", "anime"],
