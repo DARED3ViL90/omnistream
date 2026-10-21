@@ -115,63 +115,6 @@ def get_logo():
     return JSONResponse(status_code=404, content={"error": "Logo not found"})
 
 
-@app.get("/debug/{query}")
-async def debug_query(query: str):
-    debug_info = {}
-    async with httpx.AsyncClient(timeout=4.0, follow_redirects=True) as client:
-        # Test 1: apibay with piratebay headers
-        try:
-            url = f"https://apibay.org/q.php?q={urllib.parse.quote(query)}"
-            headers = {"User-Agent": USER_AGENT, "Referer": "https://thepiratebay.org/", "Origin": "https://thepiratebay.org"}
-            r = await client.get(url, headers=headers)
-            debug_info["apibay_status"] = r.status_code
-            if r.status_code == 200 and isinstance(r.json(), list):
-                debug_info["apibay_count"] = len(r.json())
-        except Exception as e:
-            debug_info["apibay_err"] = str(e)
-
-        # Test 2: thepiratebay10.org HTML scraper
-        try:
-            url_tpb10 = f"https://thepiratebay10.org/search/{urllib.parse.quote(query)}/1/99/0"
-            r10 = await client.get(url_tpb10, headers={"User-Agent": USER_AGENT})
-            debug_info["tpb10_status"] = r10.status_code
-            hashes = re.findall(r"magnet:\?xt=urn:btih:([a-zA-Z0-9]{40})", r10.text)
-            debug_info["tpb10_hashes"] = len(hashes)
-        except Exception as e:
-            debug_info["tpb10_err"] = str(e)
-
-        # Test 3: tpb.party HTML scraper
-        try:
-            url_party = f"https://tpb.party/search/{urllib.parse.quote(query)}/1/99/0"
-            rp = await client.get(url_party, headers={"User-Agent": USER_AGENT})
-            debug_info["party_status"] = rp.status_code
-            hashes_p = re.findall(r"magnet:\?xt=urn:btih:([a-zA-Z0-9]{40})", rp.text)
-            debug_info["party_hashes"] = len(hashes_p)
-        except Exception as e:
-            debug_info["party_err"] = str(e)
-
-        # Test 4: torrents-csv
-        try:
-            url_csv = f"https://torrents-csv.com/service/search?q={urllib.parse.quote(query)}"
-            rc = await client.get(url_csv, headers={"User-Agent": USER_AGENT})
-            debug_info["csv_status"] = rc.status_code
-            debug_info["csv_count"] = len(rc.json().get("torrents", [])) if rc.status_code == 200 else 0
-        except Exception as e:
-            debug_info["csv_err"] = str(e)
-
-    return debug_info
-
-@app.get("/domains")
-async def get_domains():
-    domains = await refresh_verified_domains()
-    headers = {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "*",
-        "Access-Control-Allow-Headers": "*",
-    }
-    return JSONResponse(content={"status": "online", "verified_domains": domains}, headers=headers)
-
-
 # 3. Smart Language Classifier & Flag Tagger
 def is_cam_release(title: str) -> bool:
     """Detects CAM, HDTS, Telesync, and PreDVD releases."""
